@@ -116,7 +116,7 @@ impl TokenMachine {
         new_ref
     }
 
-    pub fn lend_token(&mut self, target: Reference) {
+    pub fn borrow_token(&mut self, target: Reference) {
         let target_info = self.ref_info[&target];
         let source = target_info.parent;
         let source_info = self.ref_info[&source];

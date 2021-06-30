@@ -12,13 +12,13 @@ fn main() {
     println!("{:?}", machine);
     let r3 = machine.create_ref(r1);
     println!("{:?}", machine);
-    machine.lend_token(r2);
+    machine.borrow_token(r2);
     println!("{:?}", machine);
     machine.use_token(r2, AccessKind::Write, InteriorMut::Default);
     println!("{:?}", machine);
     machine.return_token(r2);
     println!("{:?}", machine);
-    machine.lend_token(r3);
+    machine.borrow_token(r3);
     println!("{:?}", machine);
     machine.use_token(r3, AccessKind::Write, InteriorMut::Default);
     println!("{:?}", machine);
@@ -32,8 +32,8 @@ fn main() {
     println!("{:?}", machine);
     let r4 = machine.create_ref(r1);
     let r5 = machine.create_ref(r1);
-    machine.lend_token(r4);
-    machine.lend_token(r5);
+    machine.borrow_token(r4);
+    machine.borrow_token(r5);
     machine.use_token(r1, AccessKind::Read, InteriorMut::Default);
     machine.use_token(r4, AccessKind::Read, InteriorMut::Default);
     machine.use_token(r5, AccessKind::Read, InteriorMut::Default);
@@ -47,7 +47,7 @@ fn main() {
     println!("{:?}", machine);
     machine.set_token_state(TokenState::Exclusive);
     let r6 = machine.create_ref(r1);
-    machine.lend_token(r6);
+    machine.borrow_token(r6);
     machine.use_token(r6, AccessKind::Write, InteriorMut::Default);
     println!("{:?}", machine);
 }
