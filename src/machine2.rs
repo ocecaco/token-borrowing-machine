@@ -37,11 +37,20 @@ pub struct RefInfo {
     num_splits: u32,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum TokenExclusivity {
+    Shared,
+    Exclusive,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TokenPermissions {
     ReadOnly,
     ReadWrite,
 }
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TokenInfo(TokenExclusivity, TokenPermissions);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AccessKind {
@@ -198,73 +207,96 @@ impl TokenMachine {
         self.token_count -= 1;
     }
 
-    pub fn set_read_only_state(&mut self, source: Reference, token_perms: TokenPermissions) {
-        // Changing the state of the token counts as a write.
-        self.use_token(source, AccessKind::Write);
+    pub fn set_token_perms(&mut self, source: Reference, token_perms: TokenPermissions) {
+        // Changing the state of the token requires exclusive ownership of it.
+        let token_info = self
+            .get_token_info(source)
+            .expect("have to own token to change its state");
+
+        if token_info.0 != TokenExclusivity::Exclusive {
+            panic!("Need to have exclusive ownership of the token to change its state");
+        }
 
         self.token_perms = token_perms;
     }
 
-    // Not keeping track of the type of reference doesn't work for the second
-    // optimization in the SB paper. This is because that optimization would not
-    // be allowed for a mutable reference.
-    pub fn use_token(&mut self, source: Reference, access_kind: AccessKind) {
+    fn get_token_info(&self, source: Reference) -> Option<TokenInfo> {
         let source_info = self.ref_info[&source];
 
         if source_info.num_tokens == 0 {
-            panic!("Cannot perform accesses without a token");
+            return None;
         }
 
         // You should not have tokens if you're dead, because being dead means
         // you gave your token back entirely.
         assert!(source_info.state != RefState::Dead);
 
-        match source_info.kind {
-            // Note: reading should not be allowed even if you have exclusive
-            // ownership of a read-write token, because a read-write token could
-            // be passed along to a child and used for writing before returning
-            // it to the read-only reference.
+        let exclusivity = if self.token_count == 1 {
+            TokenExclusivity::Exclusive
+        } else {
+            TokenExclusivity::Shared
+        };
+
+        let perms = self.token_perms;
+
+        Some(TokenInfo(exclusivity, perms))
+    }
+
+    // Not keeping track of the type of reference doesn't work for the second
+    // optimization in the SB paper. This is because that optimization would not
+    // be allowed for a mutable reference.
+    pub fn use_token(&mut self, source: Reference, access_kind: AccessKind) {
+        let token_info = self
+            .get_token_info(source)
+            .expect("Cannot read/write without a token");
+
+        match self.ref_info[&source].kind {
             RefKind::SharedReadOnly => {
                 match access_kind {
-                    AccessKind::Write => panic!("Cannot write with read-only reference"),
                     AccessKind::Read => {
-                        // Reading requires a read-only token or exclusive read-write token.
-                        if !(self.token_perms == TokenPermissions::ReadOnly
-                            || (self.token_count == 1
-                                && self.token_perms == TokenPermissions::ReadWrite))
+                        // Reading can be done if there are no writers, so you either need a shared read-only token or an exclusive token.
+                        if !(token_info
+                            == TokenInfo(TokenExclusivity::Shared, TokenPermissions::ReadOnly)
+                            || token_info.0 == TokenExclusivity::Exclusive)
                         {
-                            panic!("Reading with SharedRO reference requires read-only token or exclusive read-write token");
+                            panic!(
+                                "Cannot read with shared read-only reference if there are writers"
+                            );
+                        }
+                    }
+                    AccessKind::Write => panic!("Cannot write with read-only reference"),
+                }
+            }
+            RefKind::SharedReadWrite => {
+                match access_kind {
+                    // Can read with any kind of token, shared/exclusive and
+                    // read-only or read-write.
+                    AccessKind::Read => {}
+                    AccessKind::Write => {
+                        // Writing requires (shared/exclusive) read-write token
+                        if !(token_info.1 == TokenPermissions::ReadWrite) {
+                            panic!("Writing using SharedRW requires read-write token");
                         }
                     }
                 }
             }
-            RefKind::SharedReadWrite => match access_kind {
-                AccessKind::Read => {
-                    // Reading can be done using both kinds of tokens
-                }
-                AccessKind::Write => {
-                    // Writing requires read-write token (does not have to be exclusive)
-                    if self.token_perms != TokenPermissions::ReadWrite {
-                        panic!("Writing requires read-write token");
-                    }
-                }
-            },
             RefKind::Unique => {
-                // If the reference is alone, it can do anything, INCLUDING
-                // WRITING WITH A READ-ONLY TOKEN. This allows such references
-                // to change the state of the token from read-only to
-                // read-write.
-                if self.token_count == 1 {
-                    return;
-                }
-
-                // If it's not alone, it behaves like a SharedRO reference.
                 match access_kind {
-                    AccessKind::Write => panic!("Can only write if completely alone"),
                     AccessKind::Read => {
-                        // Reading requires a read-only token (not a read-write token)
-                        if self.token_perms != TokenPermissions::ReadOnly {
-                            panic!("Reading with Unique cannot be done if others can write");
+                        // Reading can be done if there are no writers, so you either need a shared read-only token or an exclusive token.
+                        if !(token_info
+                            == TokenInfo(TokenExclusivity::Shared, TokenPermissions::ReadOnly)
+                            || token_info.0 == TokenExclusivity::Exclusive)
+                        {
+                            panic!("Cannot read with unique reference if there are writers");
+                        }
+                    }
+                    AccessKind::Write => {
+                        // Writing requires exclusive read-write access.
+                        if !(token_info
+                            == TokenInfo(TokenExclusivity::Exclusive, TokenPermissions::ReadWrite))
+                        {
+                            panic!("Writing with unique reference requires exclusive read-write access");
                         }
                     }
                 }
