@@ -8,9 +8,9 @@ fn main() {
     let (r1, mut machine) = TokenMachine::init();
 
     println!("{:?}", machine);
-    let r2 = machine.create_ref(r1, RefKind::ExclusiveReadWrite);
+    let r2 = machine.create_ref(r1, RefKind::Unique);
     println!("{:?}", machine);
-    let r3 = machine.create_ref(r1, RefKind::ExclusiveReadWrite);
+    let r3 = machine.create_ref(r1, RefKind::Unique);
     println!("{:?}", machine);
     machine.borrow_token(r2);
     println!("{:?}", machine);

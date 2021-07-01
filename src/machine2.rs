@@ -2,27 +2,16 @@ use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum RefState {
-    // Created means you've never held any tokens.
+    // This state means you've never held a tokens.
     Created,
-    // This state means you have at some point received tokens (although you may
-    // have lended them out again to someone else).
+    // This state means you've received a token at some point, but you may have
+    // passed it on to someone else.
     Borrowing,
-    // Dead means you gave back all your tokens: now you can never receive any
-    // tokens again.
+    // This state means you've given back the token you've received. (In its
+    // entirety, and not only some split piece of it).
     Dead,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct RefInfo {
-    kind: RefKind,
-    state: RefState,
-    // The reference this reference was derived from
-    parent: Reference,
-    // How many tokens this reference has
-    num_tokens: u32,
-}
-
-// TODO: Update comments
 // TODO: Is it necessary to have three kinds? What about immutable/mutable and a
 // flag on the accesses indicating interior mutability? That would allow you to
 // "cast away" interior mutability before using the reference, though. Probably
@@ -31,7 +20,21 @@ pub struct RefInfo {
 pub enum RefKind {
     SharedReadOnly,
     SharedReadWrite,
-    ExclusiveReadWrite,
+    Unique,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct RefInfo {
+    kind: RefKind,
+    state: RefState,
+    // The reference this reference was derived from
+    parent: Reference,
+    // How many token pieces this reference has
+    num_tokens: u32,
+    // Into how many pieces has this reference fragmented its part of a token?
+    // This is used to ensure that a reference must give back the entire token
+    // it has received, and not just some smaller portion of it.
+    num_splits: u32,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -67,9 +70,10 @@ impl TokenMachine {
         ref_info.insert(
             initial_ref,
             RefInfo {
-                kind: RefKind::ExclusiveReadWrite,
+                kind: RefKind::Unique,
                 state: RefState::Borrowing,
                 num_tokens: 1,
+                num_splits: 0,
                 // Initial reference borrows from itself: this simplifies the code since
                 // we don't have to consider two cases, one where a reference has a
                 // parent and one where it doesn't.
@@ -97,6 +101,13 @@ impl TokenMachine {
     // impossible if you force X to return its token to the common ancestor
     // before being able to lend to Y.
     pub fn create_ref(&mut self, parent: Reference, kind: RefKind) -> Reference {
+        let parent_info = self.ref_info[&parent];
+        if parent_info.kind == RefKind::SharedReadOnly && kind != RefKind::SharedReadOnly {
+            // Prevent read-only reference from spawning mutable references and
+            // using them to mutate.
+            panic!("Cannot create mutable reference from immutable reference");
+        }
+
         let id = self.ref_count;
         self.ref_count += 1;
         let new_ref = Reference(id);
@@ -108,6 +119,7 @@ impl TokenMachine {
                 state: RefState::Created,
                 parent,
                 num_tokens: 0,
+                num_splits: 0,
             },
         );
 
@@ -127,7 +139,9 @@ impl TokenMachine {
         // Target must be ready to receive a token.
         match target_info.state {
             RefState::Created => {}
-            RefState::Borrowing => {}
+            RefState::Borrowing => {
+                panic!("Target has already received a token before")
+            }
             RefState::Dead { .. } => panic!("Target cannot be dead"),
         };
 
@@ -144,19 +158,18 @@ impl TokenMachine {
             panic!("Cannot give back a token if you don't have one");
         }
 
+        if source_info.num_splits > 0 {
+            panic!("Can only give back the entire token and not just some piece of it");
+        }
+
+        assert!(source_info.num_tokens == 1);
+
         let target = source_info.parent;
 
         self.ref_info.get_mut(&source).unwrap().num_tokens -= 1;
         self.ref_info.get_mut(&target).unwrap().num_tokens += 1;
 
-        // If you've given back all your tokens, you become dead, and cannot
-        // receive new tokens. However, you can still pass along tokens from
-        // your children, even if you are dead. So it is possible that
-        // num_tokens > 0 in this state.
-        let source_info = self.ref_info.get_mut(&source).unwrap();
-        if source_info.num_tokens == 0 {
-            source_info.state = RefState::Dead;
-        }
+        self.ref_info.get_mut(&source).unwrap().state = RefState::Dead;
     }
 
     pub fn dup_token(&mut self, source: Reference) {
@@ -166,7 +179,9 @@ impl TokenMachine {
             panic!("Cannot duplicate a token if you do not have a token");
         }
 
-        self.ref_info.get_mut(&source).unwrap().num_tokens += 1;
+        let source_info = self.ref_info.get_mut(&source).unwrap();
+        source_info.num_tokens += 1;
+        source_info.num_splits += 1;
         self.token_count += 1;
     }
 
@@ -177,7 +192,9 @@ impl TokenMachine {
             panic!("Can only merge tokens if you have more than one");
         }
 
-        self.ref_info.get_mut(&source).unwrap().num_tokens -= 1;
+        let source_info = self.ref_info.get_mut(&source).unwrap();
+        source_info.num_tokens -= 1;
+        source_info.num_splits -= 1;
         self.token_count -= 1;
     }
 
@@ -186,30 +203,6 @@ impl TokenMachine {
         self.use_token(source, AccessKind::Write);
 
         self.token_perms = token_perms;
-    }
-
-    // None means there is no frame: there is only one token.
-    fn frame_permissions(&mut self) -> Option<TokenPermissions> {
-        if self.token_count == 1 {
-            return None;
-        }
-
-        return Some(self.token_perms);
-    }
-
-    // This is a partial order
-    fn permissions_bounded(
-        frame: Option<TokenPermissions>,
-        maximum: Option<TokenPermissions>,
-    ) -> bool {
-        match (frame, maximum) {
-            (None, _) => true,
-            (_, None) => false,
-            (Some(TokenPermissions::ReadOnly), Some(TokenPermissions::ReadOnly)) => true,
-            (Some(TokenPermissions::ReadOnly), Some(TokenPermissions::ReadWrite)) => true,
-            (Some(TokenPermissions::ReadWrite), Some(TokenPermissions::ReadOnly)) => false,
-            (Some(TokenPermissions::ReadWrite), Some(TokenPermissions::ReadWrite)) => true,
-        }
     }
 
     // Not keeping track of the type of reference doesn't work for the second
@@ -222,52 +215,60 @@ impl TokenMachine {
             panic!("Cannot perform accesses without a token");
         }
 
-        if source_info.state == RefState::Dead {
-            panic!("Cannot read/write with a dead reference");
-        }
+        // You should not have tokens if you're dead, because being dead means
+        // you gave your token back entirely.
+        assert!(source_info.state != RefState::Dead);
 
         match source_info.kind {
+            // Note: reading should not be allowed even if you have exclusive
+            // ownership of a read-write token, because a read-write token could
+            // be passed along to a child and used for writing before returning
+            // it to the read-only reference.
             RefKind::SharedReadOnly => {
                 match access_kind {
                     AccessKind::Write => panic!("Cannot write with read-only reference"),
                     AccessKind::Read => {
-                        if !TokenMachine::permissions_bounded(
-                            self.frame_permissions(),
-                            Some(TokenPermissions::ReadOnly),
-                        ) {
-                            panic!("Cannot read using read-only reference if frame has write permission");
+                        // Reading requires a read-only token or exclusive read-write token.
+                        if !(self.token_perms == TokenPermissions::ReadOnly
+                            || (self.token_count == 1
+                                && self.token_perms == TokenPermissions::ReadWrite))
+                        {
+                            panic!("Reading with SharedRO reference requires read-only token or exclusive read-write token");
                         }
                     }
                 }
             }
             RefKind::SharedReadWrite => match access_kind {
-                AccessKind::Read => {}
-                AccessKind::Write => {
-                    if self.token_perms == TokenPermissions::ReadOnly {
-                        panic!("Cannot write with read-only token");
-                    }
-                }
-            },
-            RefKind::ExclusiveReadWrite => match access_kind {
                 AccessKind::Read => {
-                    if !TokenMachine::permissions_bounded(
-                        self.frame_permissions(),
-                        Some(TokenPermissions::ReadOnly),
-                    ) {
-                        panic!("Cannot read with unique reference if frame has write permissions");
-                    }
+                    // Reading can be done using both kinds of tokens
                 }
                 AccessKind::Write => {
-                    if !TokenMachine::permissions_bounded(self.frame_permissions(), None) {
-                        panic!("Cannot write with unique reference if frame has any permissions");
+                    // Writing requires read-write token (does not have to be exclusive)
+                    if self.token_perms != TokenPermissions::ReadWrite {
+                        panic!("Writing requires read-write token");
                     }
-
-                    // Note: unique reference can write even with an exclusively
-                    // owned read-only token: this is necessary to allow the
-                    // state of the token to be changed from read-only to
-                    // read-write.
                 }
             },
+            RefKind::Unique => {
+                // If the reference is alone, it can do anything, INCLUDING
+                // WRITING WITH A READ-ONLY TOKEN. This allows such references
+                // to change the state of the token from read-only to
+                // read-write.
+                if self.token_count == 1 {
+                    return;
+                }
+
+                // If it's not alone, it behaves like a SharedRO reference.
+                match access_kind {
+                    AccessKind::Write => panic!("Can only write if completely alone"),
+                    AccessKind::Read => {
+                        // Reading requires a read-only token (not a read-write token)
+                        if self.token_perms != TokenPermissions::ReadOnly {
+                            panic!("Reading with Unique cannot be done if others can write");
+                        }
+                    }
+                }
+            }
         }
     }
 }
