@@ -258,13 +258,14 @@ impl TokenMachine {
                     }
                 }
                 AccessKind::Write => {
-                    if self.token_perms == TokenPermissions::ReadOnly {
-                        panic!("Cannot write with read-only token");
-                    }
-
                     if !TokenMachine::permissions_bounded(self.frame_permissions(), None) {
                         panic!("Cannot write with unique reference if frame has any permissions");
                     }
+
+                    // Note: unique reference can write even with an exclusively
+                    // owned read-only token: this is necessary to allow the
+                    // state of the token to be changed from read-only to
+                    // read-write.
                 }
             },
         }
