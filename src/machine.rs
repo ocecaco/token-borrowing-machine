@@ -25,6 +25,7 @@ pub struct RefInfo {
 
 #[derive(Debug, Clone)]
 pub struct TokenMachine {
+    // A counter that is bumped to generate new reference IDs.
     ref_count: u32,
     // The reference that currently holds the token
     current_owner: Reference,
