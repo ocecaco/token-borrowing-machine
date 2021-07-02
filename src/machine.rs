@@ -2,14 +2,10 @@ use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum RefState {
-    // Created means the reference has never held the token.
-    Created,
-    // Borrowing means the reference has received the token from its parent, but
-    // it might have passed it on to a child. (This state is probably redundant,
-    // because you can determine it based on the current location of the token
-    // if you assume that a reference dies when it hands back the token to
-    // its parent).
-    Borrowing,
+    // Active means the reference either has received the token already, but not
+    // yet returned it to its parent (although it may have passed it along to a
+    // child), or it has never received the token at all.
+    Active,
     // Dead means that the reference has returned the token to its parent and
     // can never receive it again.
     Dead,
@@ -48,7 +44,7 @@ impl TokenMachine {
                 // This means we don't require an Option to distinguish whether a
                 // reference has a parent or not.
                 parent: initial_ref,
-                state: RefState::Borrowing,
+                state: RefState::Active,
             },
         );
 
@@ -72,7 +68,7 @@ impl TokenMachine {
         self.ref_info.insert(
             new_ref,
             RefInfo {
-                state: RefState::Created,
+                state: RefState::Active,
                 parent,
             },
         );
@@ -92,15 +88,10 @@ impl TokenMachine {
         }
 
         match target_info.state {
-            RefState::Created => {}
-            RefState::Borrowing => panic!("Invariant violation: child cannot already be borrowing when the parent has the token"),
+            RefState::Active => {}
             RefState::Dead => panic!("Target cannot be dead"),
         };
 
-        // When you first receive the token, your state becomes Borrowing in
-        // order to track that you have at some point held the token, meaning
-        // you will die if you return it back to the parent.
-        self.ref_info.get_mut(&target).unwrap().state = RefState::Borrowing;
         self.current_owner = target;
     }
 
