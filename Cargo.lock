@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "lifetime-machine"
+name = "token-borrowing-machine"
 version = "0.1.0"
