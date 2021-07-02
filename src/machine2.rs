@@ -149,6 +149,12 @@ impl TokenMachine {
         match target_info.state {
             RefState::Created => {}
             RefState::Borrowing => {
+                // TODO: Allow delivering token more than once: this allows a
+                // shared token to be upgraded to an exclusive token by sending
+                // more token pieces from below.
+
+                // Need to increment num_splits when you do so, in order to make
+                // sure that all such tokens get sent back.
                 panic!("Target has already received a token before")
             }
             RefState::Dead { .. } => panic!("Target cannot be dead"),
